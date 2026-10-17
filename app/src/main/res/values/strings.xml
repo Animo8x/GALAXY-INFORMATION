@@ -1,0 +1,31 @@
+<resources>
+    <string name="app_name">Galaxy Info</string>
+    <string name="smart_manager_title">Galaxy Info</string>
+    <string name="tab_overview">نظرة عامة</string>
+    <string name="tab_ram_storage">الذاكرة والتخزين</string>
+    <string name="tab_battery">البطارية</string>
+    <string name="tab_cameras">الكاميرات</string>
+    <string name="tab_hardware">المعالج والنظام</string>
+    
+    <string name="section_ram">ذاكرة RAM</string>
+    <string name="section_storage">مساحة التخزين</string>
+    <string name="section_battery">البطارية</string>
+    <string name="section_device_security">حالة الجهاز</string>
+    
+    <string name="btn_refresh">تحديث</string>
+    <string name="btn_clean_all">فحص شامل</string>
+    <string name="status_normal">طبيعي</string>
+    <string name="status_secure">آمن</string>
+    <string name="status_remaining">متبقي</string>
+    <string name="status_used">مستخدم</string>
+    <string name="status_free">متاح</string>
+    
+    <string name="total_memory">إجمالي الذاكرة</string>
+    <string name="used_memory">المستخدم</string>
+    <string name="available_memory">المتاح</string>
+    <string name="usage_ratio">نسبة الاستخدام</string>
+    
+    <string name="not_available">غير متاح</string>
+    <string name="not_available_on_device">غير متاح على هذا الجهاز</string>
+    <string name="unknown">غير معروف</string>
+</resources>
