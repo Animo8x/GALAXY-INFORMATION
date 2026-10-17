@@ -1,10 +1,13 @@
 package com.example.data
 
+import android.Manifest
 import android.app.ActivityManager
+import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.ImageFormat
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
@@ -40,9 +43,28 @@ class HardwareRepository(private val context: Context) {
             cameras = getCamerasSummary(),
             system = getSystemInfo(),
             runningProcesses = getRunningProcesses(),
-            oldFiles = getOldFiles(),
+            oldFiles = emptyList(), // Load asynchronously on demand to avoid ANR!
+            isScanningFiles = false,
             lastUpdatedMillis = System.currentTimeMillis()
         )
+    }
+
+    // -------------------------------------------------------------
+    // Permission Checks
+    // -------------------------------------------------------------
+    fun hasStoragePermission(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (Environment.isExternalStorageManager()) return true
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val img = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
+            val vid = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_VIDEO) == PackageManager.PERMISSION_GRANTED
+            val aud = ContextCompat.checkSelfPermission(context, Manifest.permission.READ_MEDIA_AUDIO) == PackageManager.PERMISSION_GRANTED
+            return img || vid || aud
+        }
+
+        return ContextCompat.checkSelfPermission(context, Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
     }
 
     // -------------------------------------------------------------
@@ -97,71 +119,116 @@ class HardwareRepository(private val context: Context) {
     }
 
     // -------------------------------------------------------------
-    // Background Running Apps & Games (RAM Feature)
+    // Background Running Apps & Games (Optimized & Safe)
     // -------------------------------------------------------------
     fun getRunningProcesses(): List<RunningAppProcessInfoItem> {
         val pm = context.packageManager
-        val processes = activityManager.runningAppProcesses ?: return emptyList()
         val result = mutableListOf<RunningAppProcessInfoItem>()
         val myPackageName = context.packageName
+        val seenPackages = mutableSetOf<String>()
 
-        for (proc in processes) {
-            val pkgName = proc.processName.split(":")[0]
-            var appLabel = proc.processName
-            var isSystem = true
-            var categoryName = "تطبيق (App)"
+        // 1. Check running processes from ActivityManager
+        try {
+            val processes = activityManager.runningAppProcesses
+            if (processes != null) {
+                for (proc in processes) {
+                    val pkgName = proc.processName.split(":")[0]
+                    seenPackages.add(pkgName)
+                    var appLabel = proc.processName
+                    var isSystem = true
+                    var categoryName = "تطبيق (App)"
 
-            try {
-                val appInfo = pm.getApplicationInfo(pkgName, 0)
-                appLabel = pm.getApplicationLabel(appInfo).toString()
-                isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                    try {
+                        val appInfo = pm.getApplicationInfo(pkgName, 0)
+                        appLabel = pm.getApplicationLabel(appInfo).toString()
+                        isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
 
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    categoryName = when (appInfo.category) {
-                        ApplicationInfo.CATEGORY_GAME -> "لعبة (Game)"
-                        ApplicationInfo.CATEGORY_AUDIO -> "صوتيات (Audio)"
-                        ApplicationInfo.CATEGORY_VIDEO -> "فيديو (Video)"
-                        ApplicationInfo.CATEGORY_IMAGE -> "صور (Image)"
-                        ApplicationInfo.CATEGORY_SOCIAL -> "تواصل اجتماعي (Social)"
-                        ApplicationInfo.CATEGORY_NEWS -> "أخبار (News)"
-                        ApplicationInfo.CATEGORY_MAPS -> "خرائط وملاحة"
-                        ApplicationInfo.CATEGORY_PRODUCTIVITY -> "إنتاجية وأعمال"
-                        else -> if (isSystem) "خدمة نظام" else "تطبيق (App)"
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            categoryName = when (appInfo.category) {
+                                ApplicationInfo.CATEGORY_GAME -> "لعبة (Game)"
+                                ApplicationInfo.CATEGORY_AUDIO -> "صوتيات (Audio)"
+                                ApplicationInfo.CATEGORY_VIDEO -> "فيديو (Video)"
+                                ApplicationInfo.CATEGORY_IMAGE -> "صور (Image)"
+                                ApplicationInfo.CATEGORY_SOCIAL -> "تواصل اجتماعي (Social)"
+                                ApplicationInfo.CATEGORY_NEWS -> "أخبار (News)"
+                                ApplicationInfo.CATEGORY_MAPS -> "خرائط وملاحة"
+                                ApplicationInfo.CATEGORY_PRODUCTIVITY -> "إنتاجية وأعمال"
+                                else -> if (isSystem) "خدمة نظام" else "تطبيق (App)"
+                            }
+                        } else {
+                            val isGame = (appInfo.flags and ApplicationInfo.FLAG_IS_GAME) != 0
+                            categoryName = if (isGame) "لعبة (Game)" else if (isSystem) "خدمة نظام" else "تطبيق (App)"
+                        }
+                    } catch (_: Exception) {}
+
+                    val importanceText = when (proc.importance) {
+                        ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND -> "في الواجهة (نشط)"
+                        ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE -> "مرئي في الخلفية"
+                        ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE -> "خدمة تعمل في الخلفية"
+                        ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED -> "مخزن مؤقتاً في RAM"
+                        else -> "يعمل في الخلفية"
                     }
-                } else {
-                    categoryName = if (isSystem) "خدمة نظام" else "تطبيق (App)"
-                }
-            } catch (_: Exception) {}
 
-            val importanceText = when (proc.importance) {
-                ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND -> "في الواجهة (نشط)"
-                ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE -> "مرئي في الخلفية"
-                ActivityManager.RunningAppProcessInfo.IMPORTANCE_SERVICE -> "خدمة تعمل في الخلفية"
-                ActivityManager.RunningAppProcessInfo.IMPORTANCE_CACHED -> "مخزن مؤقتاً في RAM"
-                else -> "يعمل في الخلفية"
+                    var pssBytes = 0L
+                    if (!isSystem || pkgName == myPackageName) {
+                        try {
+                            val mem = activityManager.getProcessMemoryInfo(intArrayOf(proc.pid))
+                            if (mem.isNotEmpty()) {
+                                pssBytes = mem[0].totalPss * 1024L
+                            }
+                        } catch (_: Exception) {}
+                    }
+
+                    result.add(
+                        RunningAppProcessInfoItem(
+                            processName = proc.processName,
+                            packageName = pkgName,
+                            appName = appLabel,
+                            pid = proc.pid,
+                            ramUsageBytes = pssBytes,
+                            isSystemApp = isSystem,
+                            categoryName = categoryName,
+                            importanceText = importanceText
+                        )
+                    )
+                }
             }
+        } catch (_: Exception) {}
 
-            var pssBytes = 0L
-            try {
-                val mem = activityManager.getProcessMemoryInfo(intArrayOf(proc.pid))
-                if (mem.isNotEmpty()) {
-                    pssBytes = mem[0].totalPss * 1024L
+        // 2. Also check user installed apps and games so user can always see and manage background apps
+        try {
+            val installedApps = pm.getInstalledApplications(PackageManager.GET_META_DATA)
+            for (appInfo in installedApps) {
+                if (result.size >= 40) break
+                val pkgName = appInfo.packageName
+                if (pkgName in seenPackages || pkgName == myPackageName) continue
+
+                val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
+                if (!isSystem) {
+                    seenPackages.add(pkgName)
+                    val label = pm.getApplicationLabel(appInfo).toString()
+                    val isGame = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                        appInfo.category == ApplicationInfo.CATEGORY_GAME
+                    } else {
+                        (appInfo.flags and ApplicationInfo.FLAG_IS_GAME) != 0
+                    }
+                    val category = if (isGame) "لعبة (Game)" else "تطبيق مستخدم (App)"
+
+                    result.add(
+                        RunningAppProcessInfoItem(
+                            processName = pkgName,
+                            packageName = pkgName,
+                            appName = label,
+                            pid = 0,
+                            ramUsageBytes = 0L,
+                            isSystemApp = false,
+                            categoryName = category,
+                            importanceText = "مثبت / جاهز للإيقاف"
+                        )
+                    )
                 }
-            } catch (_: Exception) {}
-
-            result.add(
-                RunningAppProcessInfoItem(
-                    processName = proc.processName,
-                    packageName = pkgName,
-                    appName = appLabel,
-                    pid = proc.pid,
-                    ramUsageBytes = pssBytes,
-                    isSystemApp = isSystem,
-                    categoryName = categoryName,
-                    importanceText = importanceText
-                )
-            )
-        }
+            }
+        } catch (_: Exception) {}
 
         return result.sortedWith(
             compareBy<RunningAppProcessInfoItem> { it.isSystemApp }
@@ -192,7 +259,7 @@ class HardwareRepository(private val context: Context) {
     }
 
     // -------------------------------------------------------------
-    // 2. Storage Information & Old Files (>= 6 Months)
+    // 2. Storage Information
     // -------------------------------------------------------------
     fun getStorageInfo(): StorageInfo {
         val dataDir = Environment.getDataDirectory()
@@ -203,7 +270,7 @@ class HardwareRepository(private val context: Context) {
         val freeBytes = stat.freeBytes
         val usedBytes = (totalBytes - freeBytes).coerceAtLeast(0L)
         val usagePercentage = if (totalBytes > 0) {
-            ((usedBytes.toDouble() / totalMemStorage(totalBytes)) * 100.0).toFloat().coerceIn(0f, 100f)
+            ((usedBytes.toDouble() / totalBytes.toDouble()) * 100.0).toFloat().coerceIn(0f, 100f)
         } else 0f
 
         var hasSdCard = false
@@ -237,18 +304,72 @@ class HardwareRepository(private val context: Context) {
         )
     }
 
-    private fun totalMemStorage(totalBytes: Long): Double {
-        return if (totalBytes > 0) totalBytes.toDouble() else 1.0
+    // -------------------------------------------------------------
+    // Dynamic Old Files Scanner (with customizable period: 2 days, 1 week, 1 month, 2 months, 3 months, 6 months, 1 year)
+    // -------------------------------------------------------------
+    fun getOldFiles(period: OldFilePeriod = OldFilePeriod.SIX_MONTHS): List<OldFileInfo> {
+        val result = mutableListOf<OldFileInfo>()
+        val cutOffMillis = System.currentTimeMillis() - (period.days * 24L * 60L * 60L * 1000L)
+        val cutOffSeconds = cutOffMillis / 1000L
+
+        // 1. Scan MediaStore Images
+        queryMediaStoreTable(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cutOffSeconds, result, maxItems = 40)
+
+        // 2. Scan MediaStore Videos
+        queryMediaStoreTable(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, cutOffSeconds, result, maxItems = 40)
+
+        // 3. Scan MediaStore Audio
+        queryMediaStoreTable(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, cutOffSeconds, result, maxItems = 30)
+
+        // 4. Scan MediaStore Downloads (API 29+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                queryMediaStoreTable(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cutOffSeconds, result, maxItems = 40)
+            } catch (_: Exception) {}
+        }
+
+        // 5. Scan MediaStore Files
+        try {
+            queryMediaStoreTable(MediaStore.Files.getContentUri("external"), cutOffSeconds, result, maxItems = 40)
+        } catch (_: Exception) {}
+
+        // 6. Scan app's external files and cache
+        val appDirs = listOfNotNull(
+            context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS),
+            context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS),
+            context.getExternalFilesDir(Environment.DIRECTORY_PICTURES),
+            context.getExternalFilesDir(null),
+            context.externalCacheDir,
+            context.cacheDir
+        )
+        for (dir in appDirs) {
+            scanDirectoryRecursively(dir, cutOffMillis, result, maxDepth = 2)
+        }
+
+        // 7. If public storage is accessible, scan public folders safely
+        try {
+            val publicDirs = listOfNotNull(
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
+                Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES)
+            )
+            for (dir in publicDirs) {
+                if (result.size >= 120) break
+                scanDirectoryRecursively(dir, cutOffMillis, result, maxDepth = 2)
+            }
+        } catch (_: Exception) {}
+
+        return result.distinctBy { it.uriString ?: it.path }
+            .sortedByDescending { it.sizeBytes }
     }
 
-    fun getOldFiles(monthsThreshold: Int = 6): List<OldFileInfo> {
-        val result = mutableListOf<OldFileInfo>()
-        val sixMonthsMillis = monthsThreshold.toLong() * 30L * 24L * 60L * 60L * 1000L
-        val cutOffTime = System.currentTimeMillis() - sixMonthsMillis
-
-        // 1. MediaStore query for older images, videos, downloads, files
+    private fun queryMediaStoreTable(
+        contentUri: Uri,
+        cutOffSeconds: Long,
+        result: MutableList<OldFileInfo>,
+        maxItems: Int
+    ) {
         try {
-            val contentUri = MediaStore.Files.getContentUri("external")
             val projection = arrayOf(
                 MediaStore.MediaColumns._ID,
                 MediaStore.MediaColumns.DISPLAY_NAME,
@@ -257,112 +378,117 @@ class HardwareRepository(private val context: Context) {
                 MediaStore.MediaColumns.MIME_TYPE,
                 MediaStore.MediaColumns.DATA
             )
-            val cutOffSeconds = cutOffTime / 1000L
             val selection = "${MediaStore.MediaColumns.DATE_MODIFIED} < ? AND ${MediaStore.MediaColumns.SIZE} > 0"
             val selectionArgs = arrayOf(cutOffSeconds.toString())
+            val sortOrder = "${MediaStore.MediaColumns.DATE_MODIFIED} DESC"
 
             context.contentResolver.query(
                 contentUri,
                 projection,
                 selection,
                 selectionArgs,
-                "${MediaStore.MediaColumns.DATE_MODIFIED} ASC"
+                sortOrder
             )?.use { cursor ->
-                val idCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-                val nameCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DISPLAY_NAME)
-                val sizeCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.SIZE)
-                val dateCol = cursor.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
+                val idCol = cursor.getColumnIndex(MediaStore.MediaColumns._ID)
+                val nameCol = cursor.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME)
+                val sizeCol = cursor.getColumnIndex(MediaStore.MediaColumns.SIZE)
+                val dateCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATE_MODIFIED)
                 val mimeCol = cursor.getColumnIndex(MediaStore.MediaColumns.MIME_TYPE)
                 val dataCol = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
 
-                while (cursor.moveToNext() && result.size < 200) {
-                    val id = cursor.getLong(idCol)
-                    val name = cursor.getString(nameCol) ?: "file_$id"
-                    val size = cursor.getLong(sizeCol)
-                    val modSec = cursor.getLong(dateCol)
+                var count = 0
+                while (cursor.moveToNext() && count < maxItems && result.size < 150) {
+                    val id = if (idCol >= 0) cursor.getLong(idCol) else 0L
+                    val name = if (nameCol >= 0) cursor.getString(nameCol) ?: "file_$id" else "file_$id"
+                    val size = if (sizeCol >= 0) cursor.getLong(sizeCol) else 0L
+                    val modSec = if (dateCol >= 0) cursor.getLong(dateCol) else 0L
                     val modMillis = modSec * 1000L
                     val mime = if (mimeCol >= 0) cursor.getString(mimeCol) ?: "" else ""
                     val path = if (dataCol >= 0) cursor.getString(dataCol) ?: "" else ""
-                    val uri = Uri.withAppendedPath(contentUri, id.toString()).toString()
+                    val uri = ContentUris.withAppendedId(contentUri, id).toString()
 
-                    val ageMonths = ((System.currentTimeMillis() - modMillis) / (30L * 24L * 60L * 60L * 1000L)).toInt().coerceAtLeast(monthsThreshold)
-                    val isImg = mime.startsWith("image/") || name.endsWith(".jpg", true) || name.endsWith(".png", true)
+                    val diffMillis = (System.currentTimeMillis() - modMillis).coerceAtLeast(0L)
+                    val ageDesc = formatAgeDescription(diffMillis)
+
+                    val isImg = mime.startsWith("image/") || name.endsWith(".jpg", true) || name.endsWith(".jpeg", true) || name.endsWith(".png", true)
                     val isVid = mime.startsWith("video/") || name.endsWith(".mp4", true) || name.endsWith(".mkv", true)
                     val isDoc = mime.contains("pdf") || mime.contains("document") || name.endsWith(".pdf", true) || name.endsWith(".doc", true) || name.endsWith(".txt", true)
 
                     result.add(
                         OldFileInfo(
-                            id = id.toString(),
+                            id = uri,
                             uriString = uri,
                             path = path,
                             name = name,
                             sizeBytes = size,
                             lastModifiedMillis = modMillis,
-                            ageInMonths = ageMonths,
+                            ageDescription = ageDesc,
                             isImage = isImg,
                             isVideo = isVid,
                             isDocument = isDoc
                         )
                     )
+                    count++
                 }
             }
         } catch (_: Exception) {}
-
-        // 2. Scan available file storage directories
-        val dirsToScan = listOfNotNull(
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS),
-            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-            context.getExternalFilesDir(null),
-            context.externalCacheDir,
-            context.cacheDir
-        )
-
-        for (dir in dirsToScan) {
-            scanDirectoryForOldFiles(dir, cutOffTime, monthsThreshold, result, maxDepth = 3)
-        }
-
-        return result.distinctBy { it.path.ifBlank { it.name } }
-            .sortedByDescending { it.sizeBytes }
     }
 
-    private fun scanDirectoryForOldFiles(
+    private fun scanDirectoryRecursively(
         dir: File?,
-        cutOffTime: Long,
-        monthsThreshold: Int,
+        cutOffMillis: Long,
         result: MutableList<OldFileInfo>,
         maxDepth: Int
     ) {
-        if (dir == null || !dir.exists() || !dir.canRead() || maxDepth <= 0 || result.size >= 250) return
-        val files = dir.listFiles() ?: return
-        for (f in files) {
-            if (f.isDirectory) {
-                scanDirectoryForOldFiles(f, cutOffTime, monthsThreshold, result, maxDepth - 1)
-            } else if (f.isFile && f.length() > 0) {
-                val mod = f.lastModified()
-                if (mod < cutOffTime) {
-                    val ageMonths = ((System.currentTimeMillis() - mod) / (30L * 24L * 60L * 60L * 1000L)).toInt().coerceAtLeast(monthsThreshold)
-                    val name = f.name
-                    val isImg = name.endsWith(".jpg", true) || name.endsWith(".jpeg", true) || name.endsWith(".png", true)
-                    val isVid = name.endsWith(".mp4", true) || name.endsWith(".mkv", true) || name.endsWith(".avi", true)
-                    val isDoc = name.endsWith(".pdf", true) || name.endsWith(".txt", true) || name.endsWith(".doc", true) || name.endsWith(".zip", true)
+        if (dir == null || !dir.exists() || !dir.canRead() || maxDepth <= 0 || result.size >= 150) return
+        try {
+            val files = dir.listFiles() ?: return
+            for (f in files) {
+                if (result.size >= 150) break
+                try {
+                    if (f.isDirectory) {
+                        if (!f.name.startsWith(".") && f.name != "Android") {
+                            scanDirectoryRecursively(f, cutOffMillis, result, maxDepth - 1)
+                        }
+                    } else if (f.isFile && f.length() > 0) {
+                        val mod = f.lastModified()
+                        if (mod < cutOffMillis) {
+                            val diff = (System.currentTimeMillis() - mod).coerceAtLeast(0L)
+                            val ageDesc = formatAgeDescription(diff)
+                            val name = f.name
+                            val isImg = name.endsWith(".jpg", true) || name.endsWith(".jpeg", true) || name.endsWith(".png", true)
+                            val isVid = name.endsWith(".mp4", true) || name.endsWith(".mkv", true) || name.endsWith(".avi", true)
+                            val isDoc = name.endsWith(".pdf", true) || name.endsWith(".txt", true) || name.endsWith(".doc", true) || name.endsWith(".zip", true)
 
-                    result.add(
-                        OldFileInfo(
-                            id = f.absolutePath.hashCode().toString(),
-                            uriString = null,
-                            path = f.absolutePath,
-                            name = name,
-                            sizeBytes = f.length(),
-                            lastModifiedMillis = mod,
-                            ageInMonths = ageMonths,
-                            isImage = isImg,
-                            isVideo = isVid,
-                            isDocument = isDoc
-                        )
-                    )
-                }
+                            result.add(
+                                OldFileInfo(
+                                    id = f.absolutePath,
+                                    uriString = null,
+                                    path = f.absolutePath,
+                                    name = name,
+                                    sizeBytes = f.length(),
+                                    lastModifiedMillis = mod,
+                                    ageDescription = ageDesc,
+                                    isImage = isImg,
+                                    isVideo = isVid,
+                                    isDocument = isDoc
+                                )
+                            )
+                        }
+                    }
+                } catch (_: Exception) {}
             }
+        } catch (_: Exception) {}
+    }
+
+    private fun formatAgeDescription(diffMillis: Long): String {
+        val days = diffMillis / (24L * 60L * 60L * 1000L)
+        return when {
+            days < 1 -> "اليوم"
+            days < 7 -> "منذ $days أيام"
+            days < 30 -> "منذ ${days / 7} أسابيع"
+            days < 365 -> "منذ ${days / 30} أشهر"
+            else -> "منذ ${days / 365} سنة"
         }
     }
 
@@ -392,6 +518,40 @@ class HardwareRepository(private val context: Context) {
             }
         }
         return Pair(count, freedBytes)
+    }
+
+    fun createSampleTestFiles(): Int {
+        val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
+        var created = 0
+        val sampleNames = listOf(
+            Triple("temp_cache_report.log", 950_000L, 3L), // 3 days ago (matched by TWO_DAYS)
+            Triple("weekly_download_cache.dat", 2_400_000L, 10L), // 10 days ago (matched by ONE_WEEK)
+            Triple("camera_photo_old.jpg", 3_450_000L, 35L), // 35 days ago (matched by ONE_MONTH)
+            Triple("project_archive_backup.zip", 8_800_000L, 65L), // 65 days ago (matched by TWO_MONTHS)
+            Triple("quarterly_statement.pdf", 1_850_000L, 100L), // 100 days ago (matched by THREE_MONTHS)
+            Triple("video_clip_vacation.mp4", 18_500_000L, 200L), // 200 days ago (matched by SIX_MONTHS)
+            Triple("annual_system_archive.bin", 22_000_000L, 380L) // 380 days ago (matched by ONE_YEAR)
+        )
+
+        for ((name, size, daysAgo) in sampleNames) {
+            try {
+                val f = File(baseDir, name)
+                if (!f.exists()) {
+                    f.createNewFile()
+                    val dummyBytes = ByteArray(1024)
+                    f.outputStream().use { fos ->
+                        val chunks = (size / 1024L).coerceIn(1L, 1024L)
+                        for (i in 0 until chunks) {
+                            fos.write(dummyBytes)
+                        }
+                    }
+                    val backdatedTime = System.currentTimeMillis() - (daysAgo * 24L * 60L * 60L * 1000L)
+                    f.setLastModified(backdatedTime)
+                    created++
+                }
+            } catch (_: Exception) {}
+        }
+        return created
     }
 
     // -------------------------------------------------------------
@@ -753,7 +913,7 @@ class HardwareRepository(private val context: Context) {
                 val sdf = SimpleDateFormat("yyyy/MM/dd", Locale.getDefault())
                 sdf.format(Date(millis))
             } catch (_: Exception) {
-                "قبل عدة أشهر"
+                "قبل فترة"
             }
         }
     }

@@ -1,9 +1,18 @@
 package com.example.ui.screens
 
+import android.Manifest
+import android.content.Intent
+import android.net.Uri
+import android.os.Build
+import android.os.Environment
+import android.provider.Settings
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,16 +33,22 @@ import androidx.compose.material.icons.filled.Apps
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Folder
 import androidx.compose.material.icons.filled.Games
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Movie
-import androidx.compose.material.icons.filled.SelectAll
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CheckboxDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -55,6 +70,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.HardwareRepository
 import com.example.data.HardwareSnapshot
 import com.example.data.OldFileInfo
+import com.example.data.OldFilePeriod
 import com.example.data.RunningAppProcessInfoItem
 import com.example.ui.components.ClassicHorizontalProgressBar
 import com.example.ui.components.ClassicInfoRow
@@ -75,17 +91,38 @@ import java.util.Locale
 @Composable
 fun RamStorageScreen(
     snapshot: HardwareSnapshot,
+    selectedPeriod: OldFilePeriod = OldFilePeriod.SIX_MONTHS,
+    isScanningFiles: Boolean = false,
+    hasStoragePermission: Boolean = false,
+    onSelectPeriod: (OldFilePeriod) -> Unit = {},
+    onRescanFiles: () -> Unit = {},
+    onPermissionGranted: () -> Unit = {},
     onKillProcess: (String) -> Unit = {},
     onKillAllProcesses: () -> Unit = {},
     onDeleteFiles: (List<OldFileInfo>) -> Unit = {},
+    onCreateTestFiles: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
     val context = LocalContext.current
 
+    // Permission Request Launcher
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { results ->
+        val anyGranted = results.values.any { it }
+        if (anyGranted) {
+            onPermissionGranted()
+            Toast.makeText(context, "تم منح إذن الوصول بنجاح", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(context, "لم يتم منح الإذن، يمكنك تفعيله من إعدادات الهاتف", Toast.LENGTH_SHORT).show()
+        }
+    }
+
     // State for selected old files
     val selectedFileIds = remember { mutableStateListOf<String>() }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var displayLimit by remember(selectedPeriod) { mutableStateOf(40) }
 
     val allOldFiles = snapshot.oldFiles
     val selectedFilesList = remember(selectedFileIds.toList(), allOldFiles) {
@@ -215,7 +252,6 @@ fun RamStorageScreen(
                 value = HardwareRepository.formatBytes(snapshot.ram.appMaxHeapBytes)
             )
 
-            // Virtual RAM / Swap
             if (snapshot.ram.swapTotalBytes != null && snapshot.ram.swapTotalBytes > 0) {
                 ClassicInfoRow(
                     label = "ذاكرة المبادلة / Swap (افتراضية)",
@@ -229,7 +265,7 @@ fun RamStorageScreen(
             }
 
             // =========================================================
-            // NEW RAM FEATURE: Running Apps & Games in Background
+            // RAM Feature: Background Running Apps & Games
             // =========================================================
             Spacer(modifier = Modifier.height(12.dp))
             ClassicSectionHeader(title = "تطبيقات وألعاب تعمل في الخلفية (Background Apps)")
@@ -256,7 +292,7 @@ fun RamStorageScreen(
                             fontWeight = FontWeight.Bold
                         )
                         Text(
-                            text = "تم العثور على $userAppsCount تطبيق مستخدم قيد التشغيل بالخلفية",
+                            text = "تطبيقات المستخدم قيد التشغيل: $userAppsCount • استهلاك RAM فوري",
                             color = ClassicTextSecondary,
                             fontSize = 12.sp
                         )
@@ -407,7 +443,7 @@ fun RamStorageScreen(
                 value = snapshot.storage.path
             )
 
-            // SD Card detection section
+            // SD Card
             if (snapshot.storage.hasSdCard && snapshot.storage.sdCardTotalBytes != null) {
                 ClassicSectionHeader(title = "بطاقة الذاكرة الخارجية (SD Card)")
                 ClassicInfoRow(
@@ -431,10 +467,98 @@ fun RamStorageScreen(
             }
 
             // =========================================================
-            // NEW STORAGE FEATURE: Clean Old Files (>= 6 Months)
+            // Storage Feature: Clean Old Files (With Customizable Period Filter)
             // =========================================================
             Spacer(modifier = Modifier.height(14.dp))
-            ClassicSectionHeader(title = "تنظيف الملفات القديمة (من 6 أشهر فأكثر)")
+            ClassicSectionHeader(title = "تنظيف الملفات القديمة (فترة مخصصة وحذف)")
+
+            // Permission Card if permission is missing
+            if (!hasStoragePermission) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 8.dp)
+                        .background(Color(0xFFFFF8E1), RoundedCornerShape(2.dp))
+                        .border(1.dp, Color(0xFFFFE082), RoundedCornerShape(2.dp))
+                        .padding(12.dp)
+                ) {
+                    Column {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                tint = Color(0xFFF57F17),
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "إذن الوصول للملفات والوسائط مطلوب",
+                                color = Color(0xFFE65100),
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "لإظهار الصور والفيديوهات والملفات القديمة التي ترغب بحذفها، يرجى منح التطبيق إذن قراءة التخزين.",
+                            color = ClassicTextPrimary,
+                            fontSize = 11.5.sp,
+                            lineHeight = 16.sp
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Button(
+                                onClick = {
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        permissionLauncher.launch(
+                                            arrayOf(
+                                                Manifest.permission.READ_MEDIA_IMAGES,
+                                                Manifest.permission.READ_MEDIA_VIDEO,
+                                                Manifest.permission.READ_MEDIA_AUDIO
+                                            )
+                                        )
+                                    } else {
+                                        permissionLauncher.launch(
+                                            arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE)
+                                        )
+                                    }
+                                },
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = ClassicCyan,
+                                    contentColor = Color.White
+                                ),
+                                shape = RoundedCornerShape(2.dp)
+                            ) {
+                                Text("منح إذن الوسائط", fontSize = 11.5.sp, fontWeight = FontWeight.Bold)
+                            }
+
+                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                OutlinedButton(
+                                    onClick = {
+                                        try {
+                                            val intent = Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                                                data = Uri.parse("package:${context.packageName}")
+                                            }
+                                            context.startActivity(intent)
+                                        } catch (_: Exception) {
+                                            val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                                                data = Uri.parse("package:${context.packageName}")
+                                            }
+                                            context.startActivity(intent)
+                                        }
+                                    },
+                                    shape = RoundedCornerShape(2.dp)
+                                ) {
+                                    Text("كافة الملفات", fontSize = 11.5.sp, color = ClassicDarkCyan)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             Column(
                 modifier = Modifier
@@ -442,20 +566,73 @@ fun RamStorageScreen(
                     .background(Color.White)
                     .padding(14.dp)
             ) {
-                Text(
-                    text = "فحص الملفات والصور والوسائط القديمة",
-                    color = ClassicTextPrimary,
-                    fontSize = 14.5.sp,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "عرض الملفات التي لم تُعدّل منذ أكثر من 6 أشهر (180 يوماً) لإمكانية حذفها وتوفير المساحة.",
-                    color = ClassicTextSecondary,
-                    fontSize = 12.sp,
-                    lineHeight = 16.sp
-                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "تصفية الملفات حسب العمر",
+                            color = ClassicTextPrimary,
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = "حدد المدة الزمنية لعرض الملفات الأقدم منها لحذفها:",
+                            color = ClassicTextSecondary,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    IconButton(
+                        onClick = onRescanFiles,
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = "إعادة الفحص",
+                            tint = ClassicDarkCyan
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(10.dp))
+
+                // Elegant Period Selector Filter (يومان، أسبوع، شهر، 3 أشهر، 6 أشهر، سنة)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    OldFilePeriod.values().forEach { period ->
+                        val isSelected = selectedPeriod == period
+                        Box(
+                            modifier = Modifier
+                                .background(
+                                    color = if (isSelected) ClassicCyan else Color(0xFFF0F3F5),
+                                    shape = RoundedCornerShape(2.dp)
+                                )
+                                .border(
+                                    width = 1.dp,
+                                    color = if (isSelected) ClassicCyan else ClassicBorder,
+                                    shape = RoundedCornerShape(2.dp)
+                                )
+                                .clickable { onSelectPeriod(period) }
+                                .padding(horizontal = 10.dp, vertical = 6.dp)
+                        ) {
+                            Text(
+                                text = period.label,
+                                color = if (isSelected) Color.White else ClassicTextPrimary,
+                                fontSize = 12.sp,
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
 
                 // Actions: Select All + Delete Selected
                 Row(
@@ -516,7 +693,7 @@ fun RamStorageScreen(
                         Icon(imageVector = Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
                         Text(
-                            text = "حذف المحدد (${HardwareRepository.formatBytes(totalSelectedBytes)})",
+                            text = "حذف (${HardwareRepository.formatBytes(totalSelectedBytes)})",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
@@ -531,7 +708,29 @@ fun RamStorageScreen(
                     .background(ClassicBorder)
             )
 
-            if (allOldFiles.isEmpty()) {
+            if (isScanningFiles) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White)
+                        .padding(24.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(24.dp),
+                            color = ClassicCyan,
+                            strokeWidth = 2.5.dp
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Text(
+                            text = "جاري فحص وتصفية الملفات القديمة...",
+                            color = ClassicTextPrimary,
+                            fontSize = 13.sp
+                        )
+                    }
+                }
+            } else if (allOldFiles.isEmpty()) {
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -548,20 +747,30 @@ fun RamStorageScreen(
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "لا توجد ملفات يزيد عمرها عن 6 أشهر حالياً في مساحة التخزين المتاحة.",
+                            text = "لا توجد ملفات أقدم من (${selectedPeriod.label}) حالياً.",
                             color = ClassicTextPrimary,
                             fontSize = 13.sp,
                             fontWeight = FontWeight.Medium
                         )
                         Text(
-                            text = "هاتفك منظم ولا يحتاج إلى تفريغ ملفات قديمة.",
+                            text = "يمكنك اختيار فترة أصغر من الشريط أعلاه أو فحص التخزين مجدداً.",
                             color = ClassicTextSecondary,
                             fontSize = 11.5.sp
                         )
+                        Spacer(modifier = Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = onCreateTestFiles,
+                            shape = RoundedCornerShape(2.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.Folder, contentDescription = null, modifier = Modifier.size(16.dp), tint = ClassicDarkCyan)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("إنشاء ملفات تجريبية لاختبار الحذف", fontSize = 12.sp, color = ClassicDarkCyan, fontWeight = FontWeight.Bold)
+                        }
                     }
                 }
             } else {
-                allOldFiles.forEach { file ->
+                val displayedFiles = allOldFiles.take(displayLimit)
+                displayedFiles.forEach { file ->
                     val isChecked = selectedFileIds.contains(file.id)
                     OldFileRow(
                         file = file,
@@ -574,6 +783,25 @@ fun RamStorageScreen(
                             }
                         }
                     )
+                }
+
+                if (allOldFiles.size > displayLimit) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.White)
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        OutlinedButton(
+                            onClick = { displayLimit += 40 },
+                            shape = RoundedCornerShape(2.dp)
+                        ) {
+                            Icon(imageVector = Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(16.dp), tint = ClassicDarkCyan)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("عرض المزيد (${allOldFiles.size - displayLimit} ملف متبقي)", fontSize = 12.sp, color = ClassicDarkCyan, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
             }
 
@@ -743,7 +971,7 @@ private fun OldFileRow(
                 file.isImage -> Icons.Default.Image
                 file.isVideo -> Icons.Default.Movie
                 file.isDocument -> Icons.Default.Description
-                else -> Icons.Default.Description
+                else -> Icons.Default.Folder
             }
             val iconTint = when {
                 file.isImage -> ClassicCyan
@@ -771,7 +999,7 @@ private fun OldFileRow(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "منذ ${file.ageInMonths} أشهر • ${HardwareRepository.formatDate(file.lastModifiedMillis)}",
+                    text = "${file.ageDescription} • ${HardwareRepository.formatDate(file.lastModifiedMillis)}",
                     color = ClassicTextSecondary,
                     fontSize = 11.sp
                 )

@@ -75,6 +75,9 @@ fun GalaxyInformationApp(viewModel: MainViewModel) {
     val snapshot by viewModel.snapshot.collectAsState()
     val selectedTab by viewModel.selectedTabIndex.collectAsState()
     val isRefreshing by viewModel.isRefreshing.collectAsState()
+    val selectedPeriod by viewModel.selectedPeriod.collectAsState()
+    val isScanningFiles by viewModel.isScanningFiles.collectAsState()
+    val hasStoragePermission by viewModel.hasStoragePermission.collectAsState()
     val context = LocalContext.current
 
     val tabs = listOf(
@@ -193,17 +196,23 @@ fun GalaxyInformationApp(viewModel: MainViewModel) {
                     0 -> OverviewScreen(
                         snapshot = snapshot,
                         onNavigateToTab = { viewModel.selectTab(it) },
-                        onCleanAll = {
-                            viewModel.cleanAndOptimize()
+                        onRefresh = {
+                            viewModel.refreshAll()
                             Toast.makeText(
                                 context,
-                                "تم فحص الذاكرة وتحديث حالة النظام بنجاح",
+                                "تم تحديث البيانات بنجاح",
                                 Toast.LENGTH_SHORT
                             ).show()
                         }
                     )
                     1 -> RamStorageScreen(
                         snapshot = snapshot,
+                        selectedPeriod = selectedPeriod,
+                        isScanningFiles = isScanningFiles,
+                        hasStoragePermission = hasStoragePermission,
+                        onSelectPeriod = { viewModel.setPeriodAndScan(it) },
+                        onRescanFiles = { viewModel.scanOldFiles() },
+                        onPermissionGranted = { viewModel.updatePermissionStatus() },
                         onKillProcess = { viewModel.killProcess(it) },
                         onKillAllProcesses = {
                             viewModel.killAllBackgroundProcesses { count ->
@@ -215,6 +224,10 @@ fun GalaxyInformationApp(viewModel: MainViewModel) {
                                 val freedStr = com.example.data.HardwareRepository.formatBytes(bytes)
                                 Toast.makeText(context, "تم حذف $count ملف بنجاح وتحرير $freedStr من مساحة التخزين", Toast.LENGTH_LONG).show()
                             }
+                        },
+                        onCreateTestFiles = {
+                            viewModel.createSampleTestFilesAndScan()
+                            Toast.makeText(context, "تم إنشاء ملفات تجريبية للاختبار بنجاح", Toast.LENGTH_SHORT).show()
                         }
                     )
                     2 -> BatteryScreen(snapshot = snapshot)

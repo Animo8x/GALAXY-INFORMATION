@@ -39,11 +39,11 @@ data class BatteryInfo(
 
 data class CameraItemInfo(
     val id: String,
-    val facing: String,           // "خلفية (Rear)" or "أمامية (Front)" or "خارجية"
+    val facing: String,
     val isBack: Boolean,
     val resolutionMegapixels: Double,
-    val maxResolutionSize: String, // e.g. "4032 x 3024"
-    val sensorActiveArraySize: String, // e.g. "4080 x 3072"
+    val maxResolutionSize: String,
+    val sensorActiveArraySize: String,
     val minZoom: Float,
     val maxZoom: Float,
     val zoomDescription: String,
@@ -93,6 +93,16 @@ data class HardwareSystemInfo(
     val buildId: String
 )
 
+enum class OldFilePeriod(val label: String, val days: Long) {
+    TWO_DAYS("يومان", 2L),
+    ONE_WEEK("أسبوع", 7L),
+    ONE_MONTH("شهر", 30L),
+    TWO_MONTHS("شهران", 60L),
+    THREE_MONTHS("3 أشهر", 90L),
+    SIX_MONTHS("6 أشهر", 180L),
+    ONE_YEAR("سنة", 365L)
+}
+
 data class OldFileInfo(
     val id: String,
     val uriString: String?,
@@ -100,7 +110,7 @@ data class OldFileInfo(
     val name: String,
     val sizeBytes: Long,
     val lastModifiedMillis: Long,
-    val ageInMonths: Int,
+    val ageDescription: String,
     val isImage: Boolean,
     val isVideo: Boolean,
     val isDocument: Boolean
@@ -113,8 +123,8 @@ data class RunningAppProcessInfoItem(
     val pid: Int,
     val ramUsageBytes: Long,
     val isSystemApp: Boolean,
-    val categoryName: String, // "لعبة (Game)", "تطبيق (App)", "خدمة (Service)"
-    val importanceText: String // "خلفية", "نشط", "خدمة"
+    val categoryName: String,
+    val importanceText: String
 )
 
 data class HardwareSnapshot(
@@ -125,5 +135,6 @@ data class HardwareSnapshot(
     val system: HardwareSystemInfo,
     val runningProcesses: List<RunningAppProcessInfoItem> = emptyList(),
     val oldFiles: List<OldFileInfo> = emptyList(),
+    val isScanningFiles: Boolean = false,
     val lastUpdatedMillis: Long
 )

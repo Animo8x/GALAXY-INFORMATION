@@ -12,8 +12,8 @@
     <string name="section_battery">البطارية</string>
     <string name="section_device_security">حالة الجهاز</string>
     
-    <string name="btn_refresh">تحديث</string>
-    <string name="btn_clean_all">فحص شامل</string>
+    <string name="btn_refresh">Refresh</string>
+    <string name="btn_clean_all">Refresh</string>
     <string name="status_normal">طبيعي</string>
     <string name="status_secure">آمن</string>
     <string name="status_remaining">متبقي</string>

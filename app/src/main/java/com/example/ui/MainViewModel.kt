@@ -10,6 +10,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.HardwareRepository
 import com.example.data.HardwareSnapshot
 import com.example.data.OldFileInfo
+import com.example.data.OldFilePeriod
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,6 +30,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _isRefreshing = MutableStateFlow(false)
     val isRefreshing: StateFlow<Boolean> = _isRefreshing.asStateFlow()
 
+    private val _selectedPeriod = MutableStateFlow(OldFilePeriod.SIX_MONTHS)
+    val selectedPeriod: StateFlow<OldFilePeriod> = _selectedPeriod.asStateFlow()
+
+    private val _isScanningFiles = MutableStateFlow(false)
+    val isScanningFiles: StateFlow<Boolean> = _isScanningFiles.asStateFlow()
+
+    private val _hasStoragePermission = MutableStateFlow(repository.hasStoragePermission())
+    val hasStoragePermission: StateFlow<Boolean> = _hasStoragePermission.asStateFlow()
+
     private val batteryReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (intent?.action == Intent.ACTION_BATTERY_CHANGED) {
@@ -42,10 +52,63 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
             getApplication<Application>().registerReceiver(batteryReceiver, filter)
         } catch (_: Exception) {}
+
+        // Start automatic 2-second live updates for battery, RAM, and storage
+        startPeriodicLiveUpdates()
+
+        // Initial background scan for old files and running processes without blocking UI
+        scanOldFiles(_selectedPeriod.value)
+    }
+
+    private fun startPeriodicLiveUpdates() {
+        viewModelScope.launch(Dispatchers.IO) {
+            while (true) {
+                kotlinx.coroutines.delay(2000L) // Exactly every 2 seconds
+                try {
+                    val freshBattery = repository.getBatteryInfo()
+                    val freshRam = repository.getRamInfo()
+                    val freshStorage = repository.getStorageInfo()
+                    val current = _snapshot.value
+
+                    _snapshot.value = current.copy(
+                        battery = freshBattery,
+                        ram = freshRam,
+                        storage = freshStorage,
+                        lastUpdatedMillis = System.currentTimeMillis()
+                    )
+                } catch (_: Exception) {}
+            }
+        }
+    }
+
+    fun createSampleTestFilesAndScan() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _isScanningFiles.value = true
+            repository.createSampleTestFiles()
+            val files = repository.getOldFiles(_selectedPeriod.value)
+            _snapshot.value = _snapshot.value.copy(
+                oldFiles = files,
+                isScanningFiles = false
+            )
+            _isScanningFiles.value = false
+        }
+    }
+
+    fun updatePermissionStatus() {
+        val granted = repository.hasStoragePermission()
+        _hasStoragePermission.value = granted
+        if (granted) {
+            scanOldFiles(_selectedPeriod.value)
+        }
     }
 
     fun selectTab(index: Int) {
         _selectedTabIndex.value = index.coerceIn(0, 4)
+        if (index == 1) {
+            // Check permissions & refresh background processes
+            updatePermissionStatus()
+            refreshProcessesOnly()
+        }
     }
 
     fun goBack(): Boolean {
@@ -56,12 +119,42 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return false
     }
 
+    fun setPeriodAndScan(period: OldFilePeriod) {
+        _selectedPeriod.value = period
+        scanOldFiles(period)
+    }
+
+    fun scanOldFiles(period: OldFilePeriod = _selectedPeriod.value) {
+        viewModelScope.launch(Dispatchers.IO) {
+            _isScanningFiles.value = true
+            val files = repository.getOldFiles(period)
+            _snapshot.value = _snapshot.value.copy(
+                oldFiles = files,
+                isScanningFiles = false
+            )
+            _isScanningFiles.value = false
+        }
+    }
+
     fun refreshAll() {
         viewModelScope.launch(Dispatchers.IO) {
             _isRefreshing.value = true
             val fresh = repository.getHardwareSnapshot()
-            _snapshot.value = fresh
+            val files = repository.getOldFiles(_selectedPeriod.value)
+            _snapshot.value = fresh.copy(oldFiles = files)
             _isRefreshing.value = false
+            _hasStoragePermission.value = repository.hasStoragePermission()
+        }
+    }
+
+    fun refreshProcessesOnly() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val freshProc = repository.getRunningProcesses()
+            val freshRam = repository.getRamInfo()
+            _snapshot.value = _snapshot.value.copy(
+                runningProcesses = freshProc,
+                ram = freshRam
+            )
         }
     }
 
@@ -71,9 +164,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             System.gc()
             Runtime.getRuntime().gc()
             repository.killAllUserProcesses()
-            kotlinx.coroutines.delay(300)
+            kotlinx.coroutines.delay(200)
             val fresh = repository.getHardwareSnapshot()
-            _snapshot.value = fresh
+            val files = repository.getOldFiles(_selectedPeriod.value)
+            _snapshot.value = fresh.copy(oldFiles = files)
             _isRefreshing.value = false
         }
     }
@@ -94,8 +188,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             _isRefreshing.value = true
             val count = repository.killAllUserProcesses()
-            val fresh = repository.getHardwareSnapshot()
-            _snapshot.value = fresh
+            val updatedProcesses = repository.getRunningProcesses()
+            val freshRam = repository.getRamInfo()
+            _snapshot.value = _snapshot.value.copy(
+                runningProcesses = updatedProcesses,
+                ram = freshRam
+            )
             _isRefreshing.value = false
             onResult(count)
         }
@@ -103,11 +201,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun deleteSelectedOldFiles(files: List<OldFileInfo>, onResult: (Int, Long) -> Unit) {
         viewModelScope.launch(Dispatchers.IO) {
-            _isRefreshing.value = true
+            _isScanningFiles.value = true
             val result = repository.deleteOldFiles(files)
-            val fresh = repository.getHardwareSnapshot()
-            _snapshot.value = fresh
-            _isRefreshing.value = false
+            val freshStorage = repository.getStorageInfo()
+            val remainingFiles = repository.getOldFiles(_selectedPeriod.value)
+            _snapshot.value = _snapshot.value.copy(
+                storage = freshStorage,
+                oldFiles = remainingFiles
+            )
+            _isScanningFiles.value = false
             onResult(result.first, result.second)
         }
     }

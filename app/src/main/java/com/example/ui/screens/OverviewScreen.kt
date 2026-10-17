@@ -24,6 +24,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CameraAlt
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.PhoneAndroid
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -58,7 +59,7 @@ import com.example.ui.theme.ClassicTextSecondary
 fun OverviewScreen(
     snapshot: HardwareSnapshot,
     onNavigateToTab: (Int) -> Unit,
-    onCleanAll: () -> Unit,
+    onRefresh: () -> Unit,
     modifier: Modifier = Modifier
 ) {
     val scrollState = rememberScrollState()
@@ -284,29 +285,35 @@ fun OverviewScreen(
 
             Spacer(modifier = Modifier.height(14.dp))
 
-            // CLEAN ALL Button
+            // Refresh Action Button
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp)
             ) {
                 Button(
-                    onClick = onCleanAll,
+                    onClick = onRefresh,
                     modifier = Modifier
                         .fillMaxWidth()
                         .height(48.dp)
-                        .testTag("clean_all_button"),
+                        .testTag("refresh_button"),
                     shape = RoundedCornerShape(2.dp),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = ClassicCleanAllBlue,
                         contentColor = Color.White
                     )
                 ) {
+                    Icon(
+                        imageVector = Icons.Default.Refresh,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
                     Text(
-                        text = "CLEAN ALL / تحديث وفحص",
+                        text = "Refresh",
                         fontSize = 15.sp,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = 1.sp
+                        letterSpacing = 0.5.sp
                     )
                 }
             }
