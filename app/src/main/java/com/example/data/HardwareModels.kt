@@ -95,10 +95,7 @@ data class HardwareSystemInfo(
 
 enum class OldFilePeriod(val label: String, val days: Long) {
     TWO_DAYS("يومان", 2L),
-    ONE_WEEK("أسبوع", 7L),
     ONE_MONTH("شهر", 30L),
-    TWO_MONTHS("شهران", 60L),
-    THREE_MONTHS("3 أشهر", 90L),
     SIX_MONTHS("6 أشهر", 180L),
     ONE_YEAR("سنة", 365L)
 }

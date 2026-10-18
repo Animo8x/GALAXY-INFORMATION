@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -195,7 +196,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 ram = freshRam
             )
             _isRefreshing.value = false
-            onResult(count)
+            withContext(Dispatchers.Main) {
+                onResult(count)
+            }
         }
     }
 
@@ -210,7 +213,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 oldFiles = remainingFiles
             )
             _isScanningFiles.value = false
-            onResult(result.first, result.second)
+            withContext(Dispatchers.Main) {
+                onResult(result.first, result.second)
+            }
         }
     }
 

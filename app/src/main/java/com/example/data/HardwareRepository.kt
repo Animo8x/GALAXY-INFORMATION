@@ -121,6 +121,12 @@ class HardwareRepository(private val context: Context) {
     // -------------------------------------------------------------
     // Background Running Apps & Games (Optimized & Safe)
     // -------------------------------------------------------------
+    private val killedPackages = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    fun clearKilledPackages() {
+        killedPackages.clear()
+    }
+
     fun getRunningProcesses(): List<RunningAppProcessInfoItem> {
         val pm = context.packageManager
         val result = mutableListOf<RunningAppProcessInfoItem>()
@@ -133,6 +139,7 @@ class HardwareRepository(private val context: Context) {
             if (processes != null) {
                 for (proc in processes) {
                     val pkgName = proc.processName.split(":")[0]
+                    if (pkgName in killedPackages || pkgName == myPackageName) continue
                     seenPackages.add(pkgName)
                     var appLabel = proc.processName
                     var isSystem = true
@@ -201,7 +208,7 @@ class HardwareRepository(private val context: Context) {
             for (appInfo in installedApps) {
                 if (result.size >= 40) break
                 val pkgName = appInfo.packageName
-                if (pkgName in seenPackages || pkgName == myPackageName) continue
+                if (pkgName in seenPackages || pkgName in killedPackages || pkgName == myPackageName) continue
 
                 val isSystem = (appInfo.flags and ApplicationInfo.FLAG_SYSTEM) != 0
                 if (!isSystem) {
@@ -223,7 +230,7 @@ class HardwareRepository(private val context: Context) {
                             ramUsageBytes = 0L,
                             isSystemApp = false,
                             categoryName = category,
-                            importanceText = "مثبت / جاهز للإيقاف"
+                            importanceText = "يعمل في الخلفية / جاهز للإيقاف"
                         )
                     )
                 }
@@ -236,13 +243,20 @@ class HardwareRepository(private val context: Context) {
         )
     }
 
-    fun killProcess(packageName: String) {
-        try {
+    fun killProcess(packageName: String): Boolean {
+        return try {
             if (packageName != context.packageName) {
+                killedPackages.add(packageName)
                 activityManager.killBackgroundProcesses(packageName)
                 System.gc()
+                Runtime.getRuntime().gc()
+                true
+            } else {
+                false
             }
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+            false
+        }
     }
 
     fun killAllUserProcesses(): Int {
@@ -250,11 +264,13 @@ class HardwareRepository(private val context: Context) {
         var count = 0
         for (item in running) {
             try {
+                killedPackages.add(item.packageName)
                 activityManager.killBackgroundProcesses(item.packageName)
                 count++
             } catch (_: Exception) {}
         }
         System.gc()
+        Runtime.getRuntime().gc()
         return count
     }
 
@@ -524,13 +540,22 @@ class HardwareRepository(private val context: Context) {
         val baseDir = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         var created = 0
         val sampleNames = listOf(
-            Triple("temp_cache_report.log", 950_000L, 3L), // 3 days ago (matched by TWO_DAYS)
-            Triple("weekly_download_cache.dat", 2_400_000L, 10L), // 10 days ago (matched by ONE_WEEK)
-            Triple("camera_photo_old.jpg", 3_450_000L, 35L), // 35 days ago (matched by ONE_MONTH)
-            Triple("project_archive_backup.zip", 8_800_000L, 65L), // 65 days ago (matched by TWO_MONTHS)
-            Triple("quarterly_statement.pdf", 1_850_000L, 100L), // 100 days ago (matched by THREE_MONTHS)
-            Triple("video_clip_vacation.mp4", 18_500_000L, 200L), // 200 days ago (matched by SIX_MONTHS)
-            Triple("annual_system_archive.bin", 22_000_000L, 380L) // 380 days ago (matched by ONE_YEAR)
+            Triple("temp_cache_report.log", 850_000L, 3L),
+            Triple("voice_memo_001.mp3", 1_450_000L, 4L),
+            Triple("chat_media_preview.jpg", 2_100_000L, 5L),
+            Triple("offline_map_tile.dat", 4_200_000L, 8L),
+            Triple("debug_crash_log.txt", 620_000L, 12L),
+            Triple("draft_document_v1.pdf", 1_850_000L, 16L),
+            Triple("browser_cached_video.mp4", 12_500_000L, 20L),
+            Triple("system_event_trace.bin", 3_100_000L, 25L),
+            Triple("camera_photo_old.jpg", 3_450_000L, 35L),
+            Triple("project_archive_backup.zip", 8_800_000L, 45L),
+            Triple("quarterly_statement.pdf", 2_250_000L, 60L),
+            Triple("saved_audio_recording.mp3", 4_800_000L, 80L),
+            Triple("video_clip_vacation.mp4", 18_500_000L, 195L),
+            Triple("high_res_photo_summer.jpg", 6_200_000L, 220L),
+            Triple("annual_system_archive.bin", 22_000_000L, 380L),
+            Triple("historic_device_backup.zip", 34_000_000L, 420L)
         )
 
         for ((name, size, daysAgo) in sampleNames) {

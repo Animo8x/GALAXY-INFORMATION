@@ -122,7 +122,7 @@ fun RamStorageScreen(
     // State for selected old files
     val selectedFileIds = remember { mutableStateListOf<String>() }
     var showDeleteConfirmDialog by remember { mutableStateOf(false) }
-    var displayLimit by remember(selectedPeriod) { mutableStateOf(40) }
+    var displayLimit by remember(selectedPeriod) { mutableStateOf(5) }
 
     val allOldFiles = snapshot.oldFiles
     val selectedFilesList = remember(selectedFileIds.toList(), allOldFiles) {
@@ -302,7 +302,6 @@ fun RamStorageScreen(
                         Button(
                             onClick = {
                                 onKillAllProcesses()
-                                Toast.makeText(context, "تم إيقاف تطبيقات الخلفية وتحرير الذاكرة", Toast.LENGTH_SHORT).show()
                             },
                             colors = ButtonDefaults.buttonColors(
                                 containerColor = ClassicCleanAllBlue,
@@ -634,6 +633,48 @@ fun RamStorageScreen(
 
                 Spacer(modifier = Modifier.height(12.dp))
 
+                // Summary Card of Selection & Expected Space Freed
+                if (allOldFiles.isNotEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (selectedFileIds.isNotEmpty()) Color(0xFFE8F4FD) else Color(0xFFF7F9FA), RoundedCornerShape(2.dp))
+                            .border(1.dp, if (selectedFileIds.isNotEmpty()) Color(0xFFBEE3F8) else ClassicBorder, RoundedCornerShape(2.dp))
+                            .padding(10.dp)
+                    ) {
+                        Column {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    text = "الملفات المحددة: ${selectedFileIds.size} من إجمالي ${allOldFiles.size} ملف",
+                                    color = ClassicTextPrimary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = "المساحة المتوقع تحريرها: ${HardwareRepository.formatBytes(totalSelectedBytes)}",
+                                    color = if (totalSelectedBytes > 0) ClassicDarkCyan else ClassicTextSecondary,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (selectedFileIds.isNotEmpty() && selectedFileIds.size == allOldFiles.size) {
+                                Spacer(modifier = Modifier.height(2.dp))
+                                Text(
+                                    text = "✓ تم تحديد كافة الملفات المطابقة للفترة المختارة (${allOldFiles.size} ملف)، بما فيها غير المعروضة في القائمة.",
+                                    color = ClassicDarkCyan,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Medium
+                                )
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                }
+
                 // Actions: Select All + Delete Selected
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -668,7 +709,7 @@ fun RamStorageScreen(
                             colors = CheckboxDefaults.colors(checkedColor = ClassicCyan)
                         )
                         Text(
-                            text = if (allSelected) "إلغاء التحديد" else "تحديد الكل (${allOldFiles.size})",
+                            text = if (allSelected) "إلغاء تحديد الكل" else "تحديد الكل (${allOldFiles.size})",
                             color = ClassicTextPrimary,
                             fontSize = 12.5.sp,
                             fontWeight = FontWeight.SemiBold
@@ -724,7 +765,7 @@ fun RamStorageScreen(
                         )
                         Spacer(modifier = Modifier.width(12.dp))
                         Text(
-                            text = "جاري فحص وتصفية الملفات القديمة...",
+                            text = "جاري فحص وتصفية الملفات القديمة في الخلفية...",
                             color = ClassicTextPrimary,
                             fontSize = 13.sp
                         )
@@ -769,6 +810,7 @@ fun RamStorageScreen(
                     }
                 }
             } else {
+                // Show initial 5 files, and +5 each time «المزيد» is clicked
                 val displayedFiles = allOldFiles.take(displayLimit)
                 displayedFiles.forEach { file ->
                     val isChecked = selectedFileIds.contains(file.id)
@@ -785,7 +827,9 @@ fun RamStorageScreen(
                     )
                 }
 
+                // Show «المزيد» button only until files end, then hide it
                 if (allOldFiles.size > displayLimit) {
+                    val remainingCount = allOldFiles.size - displayLimit
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -794,12 +838,17 @@ fun RamStorageScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         OutlinedButton(
-                            onClick = { displayLimit += 40 },
+                            onClick = { displayLimit += 5 },
                             shape = RoundedCornerShape(2.dp)
                         ) {
                             Icon(imageVector = Icons.Default.ExpandMore, contentDescription = null, modifier = Modifier.size(16.dp), tint = ClassicDarkCyan)
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("عرض المزيد (${allOldFiles.size - displayLimit} ملف متبقي)", fontSize = 12.sp, color = ClassicDarkCyan, fontWeight = FontWeight.Bold)
+                            Text(
+                                text = "المزيد (+5) • ($remainingCount متبقي)",
+                                fontSize = 12.sp,
+                                color = ClassicDarkCyan,
+                                fontWeight = FontWeight.Bold
+                            )
                         }
                     }
                 }
@@ -809,7 +858,7 @@ fun RamStorageScreen(
         }
     }
 
-    // Confirmation Dialog before deletion
+    // Confirmation Dialog before deletion (strictly requires user confirmation)
     if (showDeleteConfirmDialog) {
         AlertDialog(
             onDismissRequest = { showDeleteConfirmDialog = false },
@@ -822,11 +871,52 @@ fun RamStorageScreen(
                 )
             },
             text = {
-                Text(
-                    text = "هل أنت متأكد من رغبتك في حذف ${selectedFilesList.size} ملف (بحجم إجمالي ${HardwareRepository.formatBytes(totalSelectedBytes)})؟ لا يمكن التراجع عن هذا الإجراء.",
-                    color = ClassicTextSecondary,
-                    fontSize = 13.5.sp
-                )
+                Column {
+                    Text(
+                        text = "هل أنت متأكد من رغبتك في حذف الملفات المحددة؟ لا يمكن التراجع عن هذا الإجراء بعد الحذف.",
+                        color = ClassicTextPrimary,
+                        fontSize = 13.5.sp
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color(0xFFFFF5F5), RoundedCornerShape(2.dp))
+                            .border(1.dp, Color(0xFFFFCDD2), RoundedCornerShape(2.dp))
+                            .padding(10.dp)
+                    ) {
+                        Column {
+                            Text(
+                                text = "• عدد الملفات المحددة: ${selectedFilesList.size} ملف",
+                                color = ClassicRed,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "• مجموع الأحجام: ${HardwareRepository.formatBytes(totalSelectedBytes)}",
+                                color = ClassicRed,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Spacer(modifier = Modifier.height(3.dp))
+                            Text(
+                                text = "• المساحة المتوقع تحريرها: ${HardwareRepository.formatBytes(totalSelectedBytes)}",
+                                color = ClassicDarkCyan,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                            if (selectedFilesList.size > 5) {
+                                Spacer(modifier = Modifier.height(3.dp))
+                                Text(
+                                    text = "• سيتم حذف كافة الملفات المحددة حتى التي لم تظهر في القائمة.",
+                                    color = ClassicTextSecondary,
+                                    fontSize = 11.5.sp
+                                )
+                            }
+                        }
+                    }
+                }
             },
             confirmButton = {
                 TextButton(
